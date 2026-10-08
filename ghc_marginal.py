@@ -74,8 +74,6 @@ def summarize(i, region, zbin, outdir="output"):
 def build_table(region, zbin, outdir="output", n_cosmo=N_COSMO):
     return pd.DataFrame([summarize(i, region, zbin, outdir) for i in range(n_cosmo)])
 
-
-
 def main():
     ap = argparse.ArgumentParser(description="内側チェーンの χ² を宇宙論ごとにまとめる")
     ap.add_argument("--region", nargs="+", default=["NGC", "SGC"])
