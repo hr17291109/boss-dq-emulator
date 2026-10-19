@@ -1,0 +1,19 @@
+# MCMC simulation settings
+# When running 4 chains, change mcmc_seed, the initial values and the step covariance for each chain.
+file_base: "data/Q0001"
+snapnum: 0       # 0: z=0.61 (zBOSS=3), 2: z=0.38 (zBOSS=1)
+output_base: "output/Q1/HIGHZ_NGC_Q1_1000_k03_1"
+
+# Model parameters
+v_th: 712.9
+delta_v: 180.2
+ns_type: 0       # 0: NGC, 1: SGC
+
+n_mc: 1000
+kmax: 0.30
+
+step_covariance:           # paste the output of run_mcmc_diagnostics.py
+  - [292.81744, 899.59014]
+  - [899.59014, 2776.3055]
+
+mcmc_seed: 101

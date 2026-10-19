@@ -1,11 +1,9 @@
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel, Matern, WhiteKernel
 from sklearn.preprocessing import StandardScaler
-from getdist import MCSamples, plots
-from scipy.stats import multivariate_normal
+from getdist import MCSamples
 from tqdm import tqdm
 
 def read_paramlist(filename):
@@ -20,7 +18,6 @@ def read_paramlist(filename):
 
 def combine_data(ns, highlow):
     combined_data = []
-
     for i in range(30):
         data = np.loadtxt('output/Q'+ str(i) + '/'+highlow+'Z_'+ns+'_Q' + str(i) + '_1000_cov_chi2.dat', skiprows=1)
         p = read_paramlist(f"params/Q{str(i).zfill(4)}_input_params.ini")
@@ -28,6 +25,8 @@ def combine_data(ns, highlow):
 
         combined_data.append({
             'set_id': f'Q{i}',
+            'omega_b':   p['omega_b'],
+            'omega_cdm': p['omega_cdm'],
             'omega_m': p['Omega_m'],
             'w0': p['w0'],
             'As': p['ln(10^10As)'],
@@ -40,14 +39,17 @@ def combine_data(ns, highlow):
 
     return combined_data
 
-def prior(theta, mu_prior, cov_prior):
-    return multivariate_normal.pdf(theta, mean=mu_prior, cov=cov_prior)
+def make_design_region(X_raw, r_max=None):
+    mu = X_raw.mean(axis=0)
+    cov_inv = np.linalg.inv(np.cov(X_raw.T))
+    if r_max is None:
+        d = X_raw - mu
+        r_max = np.sqrt(np.sum((d @ cov_inv) * d, axis=1)).max()
+    return mu, cov_inv, r_max
 
-def prior(theta, prior_lo, prior_hi):
-    if np.all(theta > prior_lo) and np.all(theta < prior_hi):
-        return 1.0
-    return 0.0
-    
+def log_prior(theta, mu, cov_inv, r_max):
+    d = np.asarray(theta) - mu
+    return 0.0 if d @ cov_inv @ d < r_max**2 else -np.inf
 
 def predict_chi(theta_array, scaler_X, scaler_y, gpr):
     X_s = scaler_X.transform(np.atleast_2d(theta_array))
@@ -56,34 +58,50 @@ def predict_chi(theta_array, scaler_X, scaler_y, gpr):
     chi_std  = y_std_s * scaler_y.scale_[0]
     return chi_pred, chi_std
 
-def cosomo_mcmc(rng, covmat, current_theta, current_chi2, other_arr, theta_arr, scaler_X, scaler_y, gpr, prior_lo, prior_hi, alpha=1.0, chain):
-    proposed_theta = np.random.multivariate_normal(current_theta, covmat)
-    chi_pred_arr, chi2_std = predict_chi(proposed_theta, scaler_X, scaler_y, gpr)
-    proposed_chi2 = chi_pred_arr[0] + alpha * chi2_std[0]
-    prior_prop = prior(proposed_theta, prior_lo, prior_hi)
-    prior_curr = prior(current_theta, prior_lo, prior_hi)
+def cosomo_mcmc(rng, covmat, current_theta, current_chi2, other_arr, theta_arr, scaler_X, scaler_y, gpr, region, alpha=1.0, prior_only=False):
+    proposed_theta = rng.multivariate_normal(current_theta, covmat)
+
+    if not np.isfinite(log_prior(proposed_theta, *region)):
+        theta_arr.append(list(current_theta) + [current_chi2])
+        other_arr.append(list(proposed_theta) + [np.nan])
+        return current_theta, current_chi2
+    
+    if prior_only:
+        proposed_chi2 = 0.0
+    else:
+        chi_pred_arr, chi2_std = predict_chi(proposed_theta, scaler_X, scaler_y, gpr)
+        proposed_chi2 = chi_pred_arr[0] + alpha * chi2_std[0]
 
     log_r = -(proposed_chi2 - current_chi2) / 2.0
     if np.log(rng.random()) < log_r:
-        th_copy = proposed_theta.copy()
-        th_copy = th_copy.tolist()
-        th_copy.append(proposed_chi2)
-        theta_arr.append(th_copy)
+        theta_arr.append(list(proposed_theta) + [proposed_chi2])
         return proposed_theta, proposed_chi2
     else:
-        th_copy = current_theta.tolist() if isinstance(current_theta, np.ndarray) else list(current_theta)
-        th_copy.append(current_chi2)
-        theta_arr.append(th_copy)
-        th_copy1 = proposed_theta.copy()
-        th_copy1 = th_copy1.tolist()
-        th_copy1.append(proposed_chi2)
-        other_arr.append(th_copy1)
+        theta_arr.append(list(current_theta) + [current_chi2])
+        other_arr.append(list(proposed_theta) + [proposed_chi2])
         return current_theta, current_chi2
 
-def GPmcmc(df, Nsteps, nburnin, kn=1, step=0.05):
+def make_kernel(n_dim, kind="rbf", white=True):
+    amp = ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-3, 1e3))
+    ls = dict(length_scale=np.ones(n_dim), length_scale_bounds=(1e-2, 1e3))
+
+    if kind == "rbf":
+        kernel = amp * RBF(**ls)
+    elif kind == "matern52":
+        kernel = amp * Matern(nu=2.5, **ls)
+    else:
+        raise ValueError(f"unknown kernel kind: {kind}")
+
+    if white:
+        kernel = kernel + WhiteKernel(noise_level=1e-2, noise_level_bounds=(1e-6, 1e1))
+    return kernel
+
+def GPmcmc(df, Nsteps, nburnin, kernel="rbf", step=0.05, seed=12345, r_max=None, prior_only=False, alpha=0.5, white=True, y_col="chi"):
+    rng = np.random.default_rng(seed)
     param_names = ["omega_m", "w0", "As", "ns"]
     X_raw = df[param_names].values
-    y_raw = df["chi"].values
+    y_raw = df[y_col].values
+    #y_raw = df["chi"].values
 
     scaler_X = StandardScaler()
     scaler_y = StandardScaler()
@@ -91,82 +109,42 @@ def GPmcmc(df, Nsteps, nburnin, kn=1, step=0.05):
     X_scaled = scaler_X.fit_transform(X_raw)
     y_scaled = scaler_y.fit_transform(y_raw.reshape(-1, 1)).ravel()
 
-    if kn == 1:
-        kernel = (
-            ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-3, 1e3))
-            * RBF(length_scale=np.ones(X_scaled.shape[1]),
-                length_scale_bounds=(1e-2, 1e2))
-        )
-    elif kn == 2:
-        kernel = (
-            ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-3, 1e3))
-            * RBF(length_scale=np.ones(X_scaled.shape[1]),
-                length_scale_bounds=(1e-2, 1e3))
-        )
-    elif kn == 3:
-        kernel = (
-            ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-3, 1e3))
-            * RBF(length_scale=np.ones(X_scaled.shape[1]),
-                length_scale_bounds=(1e-1, 1e7))
-        )
-    elif kn == 4:
-        kernel = (
-            ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-3, 1e3))
-            * RBF(length_scale=np.ones(X_scaled.shape[1]),
-                length_scale_bounds=(1e-2, 1e3))
-        )
-    elif kn == 5:
-        kernel = (
-            ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-3, 1e3))
-            * Matern(length_scale=np.ones(X_scaled.shape[1]),
-                    length_scale_bounds=(1e-2, 1e2),
-                    nu=2.5)
-        )
-    elif kn == 6:
-        kernel = (
-            ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-3, 1e3))
-            * Matern(length_scale=np.ones(X_scaled.shape[1]),
-                    length_scale_bounds=(1e-2, 1e7),
-                    nu=2.5)
-        )
+    kern = make_kernel(X_scaled.shape[1], kind=kernel, white=white)
 
     gpr = GaussianProcessRegressor(
-        kernel=kernel,
+        kernel=kern,
         n_restarts_optimizer=20,
         normalize_y=False,
         random_state=42
     )
     gpr.fit(X_scaled, y_scaled)
+    print("学習後のカーネル:", gpr.kernel_)
+    if white:
+        noise = gpr.kernel_.k2.noise_level
+        print(f"ノイズ σ (χ² 単位) = {np.sqrt(noise) * scaler_y.scale_[0]:.1f}")
 
-    #mu_prior    = X_raw.mean(axis=0)
-    #cov_prior   = np.cov(X_raw.T)
-
-    data_range = X_raw.max(axis=0) - X_raw.min(axis=0)
-    margin = 0.1 * data_range
-    prior_lo = X_raw.min(axis=0) - margin
-    prior_hi = X_raw.max(axis=0) + margin
+    region = make_design_region(X_raw, r_max=r_max)
 
     covmat = np.cov(X_raw.T) * step
-    #covmat = cov_prior*step
 
-    best_row = df.loc[df["chi"].idxmin()]
+    best_row = df.loc[df[y_col].idxmin()]
     current_theta = [best_row['omega_m'], best_row['w0'], best_row['As'], best_row['ns']]
-    current_chi2  = best_row['chi']
-    #best_om = df.loc[df["chi"].idxmin()]['omega_m']
-    #best_w0 = df.loc[df["chi"].idxmin()]['w0']
-    #best_As = df.loc[df["chi"].idxmin()]['As']
-    #best_ns = df.loc[df["chi"].idxmin()]['ns']
-    #best_chi2 = df.loc[df["chi"].idxmin()]['chi']
-    #current_theta = [best_om, best_w0, best_As, best_ns]
+
+    if prior_only:
+        current_chi2 = 0.0
+    else:
+        mu0, sd0 = predict_chi(current_theta, scaler_X, scaler_y, gpr)
+        current_chi2 = mu0[0] + alpha * sd0[0]
+        print(f"初期 χ²: 実測 {best_row[y_col]:.3f} / GP {current_chi2:.3f}")
+    
     theta_arr = []
     th_copy = current_theta.copy()
     th_copy.append(current_chi2)
     theta_arr.append(th_copy)
-    #current_chi2 = best_chi2
     other_arr = []
 
     for i in tqdm(range(Nsteps)):
-        current_theta, current_chi2 = cosomo_mcmc(covmat, current_theta, current_chi2, other_arr, theta_arr, scaler_X, scaler_y, gpr, prior_lo, prior_hi, alpha=0.5)
+        current_theta, current_chi2 = cosomo_mcmc(rng, covmat, current_theta, current_chi2, other_arr, theta_arr, scaler_X, scaler_y, gpr, region, alpha=alpha, prior_only=prior_only)
 
     theta_arr = np.array(theta_arr)
 
@@ -190,80 +168,8 @@ def GPmcmc(df, Nsteps, nburnin, kn=1, step=0.05):
     print(f"採択回数: {accepted_steps}")
     print(f"棄却回数: {rejected_steps}")
     print(f"平均採択率: {acceptance_rate:.4f} ({acceptance_rate * 100:.1f}%)")
+
+    d = theta_arr[nburnin:, :4] - region[0]
+    dM = np.sqrt(np.sum((d @ region[1]) * d, axis=1))
+    print(f"r_max の 95% より外側にあるサンプルの割合: {(dM > 0.95 * region[2]).mean():.3f}")
     return mc_samples    
-
-NHdata = combine_data('NGC', 'HIGH')
-df = pd.DataFrame(NHdata)
-Nsteps = 20000
-nburnin = 4000
-samples1=GPmcmc(df, Nsteps, nburnin, kn=2)
-g1 = plots.get_subplot_plotter(subplot_size=2.5)
-g1.triangle_plot(
-    samples1,
-    filled=True,
-    contour_colors=["steelblue"],
-    title_limit=1,
-)
-g1.fig.suptitle("Posterior Distribution (GP + MCMC)", fontsize=14, y=1.01)
-g1.fig.savefig("NGC_HIGHZ_RBF_posterior_triangle_20000_c1.png", dpi=150, bbox_inches="tight")
-#g1.fig.savefig("NGC_HIGHZ_Matern_posterior_triangle_100000.png", dpi=150, bbox_inches="tight")
-
-NLdata = combine_data('NGC', 'LOW')
-df2 = pd.DataFrame(NLdata)
-Nsteps = 20000
-nburnin = 4000
-samples2=GPmcmc(df2, Nsteps, nburnin, kn=2)
-g2 = plots.get_subplot_plotter(subplot_size=2.5)
-g2.triangle_plot(
-    samples2,
-    filled=True,
-    contour_colors=["steelblue"],
-    title_limit=1,
-)
-g2.fig.suptitle("Posterior Distribution (GP + MCMC)", fontsize=14, y=1.01)
-g2.fig.savefig("NGC_LOWZ_RBF_posterior_triangle_20000_c1.png", dpi=150, bbox_inches="tight")
-#g2.fig.savefig("NGC_LOWZ_Matern_posterior_triangle_100000.png", dpi=150, bbox_inches="tight")
-
-SHdata = combine_data('SGC', 'HIGH')
-df3 = pd.DataFrame(SHdata)
-Nsteps = 20000
-nburnin = 4000
-samples3=GPmcmc(df3, Nsteps, nburnin, kn=2)
-g3 = plots.get_subplot_plotter(subplot_size=2.5)
-g3.triangle_plot(
-    samples3,
-    filled=True,
-    contour_colors=["steelblue"],
-    title_limit=1,
-)
-g3.fig.suptitle("Posterior Distribution (GP + MCMC)", fontsize=14, y=1.01)
-g3.fig.savefig("SGC_HIGHZ_RBF_posterior_triangle_20000_c1.png", dpi=150, bbox_inches="tight")
-#g3.fig.savefig("SGC_HIGHZ_Matern_posterior_triangle_100000.png", dpi=150, bbox_inches="tight")
-
-SLdata = combine_data('SGC', 'LOW')
-df4 = pd.DataFrame(SLdata)
-Nsteps = 20000
-nburnin = 4000
-samples4=GPmcmc(df4, Nsteps, nburnin, kn=2)
-g4 = plots.get_subplot_plotter(subplot_size=2.5)
-g4.triangle_plot(
-    samples4,
-    filled=True,
-    contour_colors=["steelblue"],
-    title_limit=1,
-)
-g4.fig.suptitle("Posterior Distribution (GP + MCMC)", fontsize=14, y=1.01)
-g4.fig.savefig("SGC_LOWZ_RBF_posterior_triangle_20000_c1.png", dpi=150, bbox_inches="tight")
-#g4.fig.savefig("SGC_LOWZ_Matern_posterior_triangle_100000.png", dpi=150, bbox_inches="tight")
-
-g = plots.get_subplot_plotter(subplot_size=2.5)
-g.triangle_plot(
-    [samples1, samples2, samples3, samples4],
-    filled=True,
-    contour_colors=["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"],
-    legend_labels=["NGC HIGH", "NGC LOW", "SGC HIGH", "SGC LOW"],
-    title_limit=1,
-)
-g.fig.suptitle("Posterior Distribution (GP + MCMC) - All Data", fontsize=14, y=1.01)
-g.fig.savefig("All_Data_RBF_posterior_triangle_20000_c1.png", dpi=150, bbox_inches="tight")
-#g.fig.savefig("All_Data_Matern_posterior_triangle_100000.png", dpi=150, bbox_inches="tight")

@@ -196,6 +196,13 @@ int main(int argc, char **argv) {
     dfile << "delta_v" << " " << "Vmax_threshould" << " " << "chi2" << std::endl;
     dfile << std::setprecision(15);
     std::ofstream ofile(OutBase+"_cov_chi2.dat");
+    ofile << "# git: " << GIT_HASH << "\n";
+    ofile << "# config: " << argv[1] << "\n";
+    ofile << "# v_th_init: " << v_th << " delta_v_init: " << delta_v << "\n";
+    ofile << "# step_cov: " << cov_mat(0,0) << " " << cov_mat(0,1) << " " << cov_mat(1,1) << "\n";
+    ofile << "# mcmc_seed: " << mcmc_seed << "\n";
+    ofile << "# fit_kmax: " << fit_kmax << "\n";
+    ofile << "# n_mc: " << Nmc << "\n";
     ofile << "delta_v" << " " << "Vmax_threshould" << " " << "chi2" << std::endl;
     ofile << std::setprecision(15);
 

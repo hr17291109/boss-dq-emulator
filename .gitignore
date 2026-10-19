@@ -15,7 +15,10 @@ mlruns/
 evidence/
 plot/
 psout/
+design/
 
 # Host-specific symlinks to external mounts
 /BOSSmultipoles
 /data
+config/
+configs_backup/
