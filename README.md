@@ -1,4 +1,4 @@
-# powerspectrum
+# boss-dq-emulator
 
 Dark Quest Simulation のハローカタログと SDSS/BOSS CMASS 銀河の赤方偏移空間パワースペクトル多重極を直接比較し、宇宙論パラメータを推定するためのコード。
 
@@ -70,11 +70,11 @@ $$
 ## Build
 
 ```bash
-git clone git@github.com:hr17291109/powerspectrum.git
+git clone git@github.com:hr17291109/boss-dq-emulator.git
 # または
-git clone https://github.com/hr17291109/powerspectrum.git
+git clone https://github.com/hr17291109/boss-dq-emulator.git
 
-cd powerspectrum
+cd boss-dq-emulator
 sh compile.sh
 ```
 
