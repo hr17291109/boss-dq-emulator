@@ -1,11 +1,19 @@
 # Build artifacts
 *.exe
 *.o
+*.png
+*.lnk
+*.csv
+*.txt
 
 # Python
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+evidence.ipynb
+gd.ipynb
+plot.ipynb
+scpt2.py
 
 # Simulation input/output data
 input/
@@ -16,6 +24,7 @@ evidence/
 plot/
 psout/
 design/
+params/
 
 # Host-specific symlinks to external mounts
 /BOSSmultipoles
