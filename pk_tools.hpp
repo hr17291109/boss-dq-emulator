@@ -140,10 +140,14 @@ void mwc_fileload(std::string Mfname, std::string Wfname, std::string Cfname, Ei
     std::cout <<  "C cols: " << C.cols() << std::endl;
 }
 
+inline double hartlap_factor(int n_data, int n_mocks = 2048) {
+    return double(n_mocks - n_data - 2) / double(n_mocks - 1);
+}
+
 void chi_square(const Eigen::VectorXd &Bpk, const Eigen::MatrixXd &WM,
                 const Eigen::MatrixXd &C, const BinnedData &pk0,
                 const BinnedData &pk2, const BinnedData &pk4,
-                double &x2, double fit_kmax) {
+                double &x2, double fit_kmax, bool use_hartlap) {
     constexpr int kNbinPerMultipole = 40;
 
     Eigen::VectorXd pk(1200);
@@ -203,79 +207,10 @@ void chi_square(const Eigen::VectorXd &Bpk, const Eigen::MatrixXd &WM,
     Eigen::VectorXd delta = Bpk_sub - psim_sub;
     Eigen::LDLT<Eigen::MatrixXd> ldlt(C_sub);
     x2 = delta.dot(ldlt.solve(delta));
+    if (use_hartlap) x2 *= hartlap_factor(sub_size);
     //Eigen::MatrixXd Cinv_sub = C_sub.inverse();
     //x2 = delta.transpose() * Cinv_sub * delta;
 }
-
-void chi_square_hartlap(const Eigen::VectorXd &Bpk, const Eigen::MatrixXd &WM,
-                const Eigen::MatrixXd &C, const BinnedData &pk0,
-                const BinnedData &pk2, const BinnedData &pk4,
-                double &x2, double fit_kmax) {
-    constexpr int kNbinPerMultipole = 40;
-
-    Eigen::VectorXd pk(1200);
-    Eigen::VectorXd wmp(200);
-    Eigen::VectorXd psim0(pk0.get_nbin());
-    Eigen::VectorXd psim2(pk2.get_nbin());
-    Eigen::VectorXd psim4(pk4.get_nbin());
-    Eigen::VectorXd psim_full(120);
-
-    for (int i = 0; i < pk0.get_nbin(); i++) {
-        psim0(i) = pk0.get_ymean(i);
-        psim2(i) = pk2.get_ymean(i);
-        psim4(i) = pk4.get_ymean(i);
-    }
-
-    pk << psim0, psim2, psim4;
-    wmp = WM*pk;
-
-    int j = 0;
-    for (int i = 0; i < kNbinPerMultipole*5; i++) {
-        if (i < kNbinPerMultipole ||
-            (i >= kNbinPerMultipole*2 && i < kNbinPerMultipole*3) ||
-            i >= kNbinPerMultipole*4) {
-            psim_full(j) = wmp(i);
-            j++;
-        }
-    }
-
-    constexpr double kBinWidth = kmax / kNbinPerMultipole;
-    int limit = static_cast<int>(std::round(fit_kmax / kBinWidth));
-    if (limit < 1 || limit > kNbinPerMultipole) {
-        std::cerr << "invalid fit_kmax: " << fit_kmax << std::endl;
-        std::exit(1);
-    }
-
-    int sub_size = limit * 3;
-    Eigen::MatrixXd C_sub(sub_size, sub_size);
-    Eigen::VectorXd Bpk_sub(sub_size);
-    Eigen::VectorXd psim_sub(sub_size);
-
-    for (int m_row = 0; m_row < 3; m_row++) {
-        int orig_row_start = m_row * kNbinPerMultipole;
-        int sub_row_start = m_row * limit;
-
-        Bpk_sub.segment(sub_row_start, limit) = Bpk.segment(orig_row_start, limit);
-        psim_sub.segment(sub_row_start, limit) = psim_full.segment(orig_row_start, limit);
-
-        for (int m_col = 0; m_col < 3; m_col++) {
-            int orig_col_start = m_col * kNbinPerMultipole;
-            int sub_col_start = m_col * limit;
-
-            C_sub.block(sub_row_start, sub_col_start, limit, limit) =
-                C.block(orig_row_start, orig_col_start, limit, limit);
-        }
-    }
-
-    Eigen::VectorXd delta = Bpk_sub - psim_sub;
-    Eigen::LDLT<Eigen::MatrixXd> ldlt(C_sub);
-    x2 = delta.dot(ldlt.solve(delta));
-    constexpr int kNmocks = 2048;
-    const int n_data = sub_size;
-    const double hartlap = double(kNmocks - n_data - 2) / double(kNmocks - 1);
-    x2 = hartlap * delta.dot(ldlt.solve(delta));
-}
-
 
 void mcmc(double chi2, double& delta_v, double& v_th,
           std::vector<double>& chi2list, std::vector<double>& dvlist,
