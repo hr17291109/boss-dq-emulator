@@ -88,6 +88,11 @@ int main(int argc, char **argv) {
             std::cerr << "unsupported snapnum: " << snapnum << std::endl;
             return 1;
     }
+    if (zBOSS < 0) {
+        std::cerr << "snapnum " << snapnum << " (z=" << redshift
+                  << ") has no corresponding BOSS redshift bin" << std::endl;
+        return 1;
+    }
     std::cerr << "Redshift: " << redshift << std::endl;
 
     param::parameter p1(FileBase + "/" + params_dir + "/" + nugenic_param_file);
