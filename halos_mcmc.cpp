@@ -39,17 +39,33 @@ int main(int argc, char **argv) {
     double fit_kmax      = config["kmax"].as<double>();
     int mcmc_seed = config["mcmc_seed"].as<int>(1);
 
-    Eigen::MatrixXd cov_mat(2, 2);
-    if (config["step_covariance"]) {
-        YAML::Node cov_node = config["step_covariance"];
-
-        for (int i = 0; i < 2; i++) {
-            for (int j = 0; j < 2; j++) {
-                cov_mat(i, j) = cov_node[i][j].as<double>();
-            }
-        }
-        std::cout << "Loaded Covariance Matrix:\n" << cov_mat << std::endl;
+    if (!config["step_covariance"]) {
+        std::cerr << "step_covariance is required in config" << std::endl;
+        return 1;
     }
+    YAML::Node cov_node = config["step_covariance"];
+    if (!cov_node.IsSequence() || cov_node.size() != 2 ||
+        cov_node[0].size() != 2 || cov_node[1].size() != 2) {
+        std::cerr << "step_covariance must be a 2x2 matrix" << std::endl;
+        return 1;
+    }
+    Eigen::Matrix2d cov_mat;
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 2; j++) {
+            cov_mat(i, j) = cov_node[i][j].as<double>();
+        }
+    }
+
+    const double rho = cov_mat(0, 1) / std::sqrt(cov_mat(0, 0) * cov_mat(1, 1));
+    const bool symmetric = std::abs(cov_mat(0, 1) - cov_mat(1, 0))
+                        <= 1e-12 * std::abs(cov_mat(0, 1));
+    if (cov_mat(0, 0) <= 0 || cov_mat(1, 1) <= 0 || !symmetric || !(std::abs(rho) < 1)) {
+        std::cerr << "step_covariance must be symmetric positive definite:\n"
+                  << cov_mat << std::endl;
+        return 1;
+    }
+    std::cout << "Loaded Covariance Matrix:\n" << cov_mat
+              << "\n(rho = " << rho << ")" << std::endl;
 
     const bool use_hartlap = config["hartlap"].as<bool>(false);
     std::cout << "hartlap: " << (use_hartlap ? "true" : "false") << std::endl;
